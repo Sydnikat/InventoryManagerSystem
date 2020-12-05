@@ -1,0 +1,129 @@
+version: '3.4'
+
+services:
+  apigateway:
+    image: traefik:v2.2.1
+    ports:
+      - "5080:80" 
+      - "5088:8080" 
+    command:
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock 
+    networks:
+      - ims-network
+
+
+  inventory.supply.web:
+    image: ${DOCKER_REGISTRY:-ims}inventorysupplyweb:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Inventory/Inventory.Supply.Web/Dockerfile
+    networks:
+      - ims-network
+    depends_on:
+      - inventory.stock.web
+      - rabbitmq
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.supply.rule=PathPrefix(`/api/supplies`)" 
+      - "traefik.http.middlewares.supply-web-auth.forwardauth.address=http://users:9000/api/auth/supplier"
+      - "traefik.http.routers.supply.middlewares=supply-web-auth@docker"
+
+  inventory.stock.web:
+    image: ${DOCKER_REGISTRY:-ims}inventorystockweb:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Inventory/Inventory.Stock.Web/Dockerfile
+    networks:
+      - ims-network
+    depends_on:
+      - mssql
+      - rabbitmq
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.stock.rule=PathPrefix(`/api/stock`)" 
+      - "traefik.http.middlewares.stock-web-auth.forwardauth.address=http://users:9000/api/auth/manager"
+      - "traefik.http.routers.stock.middlewares=stock-web-auth@docker"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    hostname: rabbitmq
+    networks:
+      - ims-network
+
+
+  users:
+    image: ${REGISTRY_URL:-ims}/users:${IMAGE_TAG:-latest}
+    environment:
+      PORT: 9000 # The port where the node.js server listens
+      DATABASE_URL: mongodb://mongodb:27017/ims-users
+      ACCESS_TOKEN_SECRET: 1acfed56b2649ab0913b395d46cf19a71d7a36ad91c47eeac02d665e566556bdaa659260a3ef8c79232a578fb3dff7956e2da88a0db27bc2382d4239e1a0c7fc
+      REFRESH_TOKEN_SECRET: 87e9fefbd213c51f8d11aba1b70a1f3a0b194f489b094df68b5a807fdc9e0556d9b5b875cce1ef191fbd0db9571f716d390f29d9c6062f0459167db764fa2108
+    build:
+      context: .
+      dockerfile: ./Users/Docker/Dockerfile
+    volumes:
+      - ./Users/server/src:/code/src
+    networks:
+      - ims-network
+    depends_on:
+      - mongodb
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
+      - "traefik.http.routers.users.rule=PathPrefix(`/api/users`)"
+
+  web:
+    image: ${REGISTRY_URL:-ims}/web:${IMAGE_TAG:-latest}
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+    build:
+      context: .
+      dockerfile: Web/Docker/Dockerfile
+    volumes:
+      - ./Web/Client/public:/code/public
+      - ./Web/Client/src:/code/src
+    networks:
+      - ims-network
+    depends_on:
+      - inventory.stock.web
+      - inventory.supply.web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.web.rule=PathPrefix(`/`)"
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    environment:
+      SA_PASSWORD: "IMSpass666*"
+      ACCEPT_EULA: "Y"
+    networks:
+      - ims-network
+    volumes:
+      - ./ims-mssql-data:/var/opt/mssql/data
+
+  mongodb:
+    image: mongo:4.2.8
+    networks:
+      - ims-network
+    volumes:
+      - ims-mongo-data:/data/db
+
+  redis:
+    image: redis:6.0.5-alpine
+    networks:
+      - ims-network
+ 
+volumes:
+  ims-mongo-data:
+    driver: local
+  ims-mssql-data:
+    driver: local
+
+networks:
+  ims-network:
+    driver: bridge
